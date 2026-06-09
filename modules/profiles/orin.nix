@@ -220,5 +220,32 @@ in
     hardware.graphics.extraPackages = lib.mkAfter [
       pkgs.mesa
     ];
+
+    services.udev.packages = [
+      (pkgs.runCommand "tegra-udev-fixed" { } ''
+        mkdir -p $out/etc/udev/rules.d
+
+        rule=$(ls /nix/store/*-jetson-udev-rules/etc/udev/rules.d/99-tegra-devices.rules | head -n1)
+        cp "$rule" $out/etc/udev/rules.d/99-tegra-devices.rules
+
+        # 1) GROUP="debug" -> GROUP="root"
+        sed -i 's/GROUP="debug"/GROUP="root"/g' $out/etc/udev/rules.d/99-tegra-devices.rules
+
+        # 2) Eksik virgülleri AWK ile ekle
+        awk '
+        /^[A-Z]/ {
+          gsub(/ ([A-Z]+==)/, ", \\1")
+          gsub(/ MODE=/, ", MODE=")
+          gsub(/ GROUP=/, ", GROUP=")
+          gsub(/ OWNER=/, ", OWNER=")
+          gsub(/ RUN\+=/, ", RUN+=")
+        }
+        { print }
+        ' $out/etc/udev/rules.d/99-tegra-devices.rules > $out/etc/udev/rules.d/99-fixed.rules
+
+        mv $out/etc/udev/rules.d/99-fixed.rules $out/etc/udev/rules.d/99-tegra-devices.rules
+      '')
+    ];
+
   };
 }
