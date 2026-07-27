@@ -590,6 +590,18 @@ in
 
     flashScriptOverrides.onlyQSPI = mkEnableOption "to only flash QSPI partitions, i.e. disable flashing of boot and root partitions to eMMC";
 
+    flashScriptOverrides.appPartitionSizeBytes = mkOption {
+      description = ''
+        Static APP (rootfs) partition size in bytes for flash.xml. When set,
+        flash.xml stops deriving ESP/APP sizes from the built sdImage -- so the
+        flash script no longer depends on building the image -- and flashing
+        requires `-s <signed-sd-image>` to supply the actual image at run time.
+        Size it above any rootfs you expect to flash; unused space is idle.
+      '';
+      type = types.nullOr types.ints.positive;
+      default = null;
+    };
+
     flashScriptOverrides.preFlashCommands = mkOption {
       description = "Commands to run before the actual flashing";
       type = types.str;
@@ -730,6 +742,13 @@ in
   };
 
   config = mkIf cfg.enable {
+    # jetpack ships 99-tegra-devices.rules which sets GROUP="debug" on Tegra
+    # debug device nodes, but NixOS creates no `debug` group -> udev logs
+    # "Failed to resolve group 'debug', ignoring" for every matching rule on
+    # every device event (floods the journal >10/s under DRM device churn).
+    # Define the group so udev resolves it and applies the intended ownership.
+    users.groups.debug = { };
+
     assertions = [
       {
         assertion =
@@ -852,6 +871,22 @@ in
             # Disable TPM hwrng to prevent constant fTPM polling pressure
             # that can saturate the OP-TEE single-lane fTPM TA under load.
             HW_RANDOM_TPM = no;
+          };
+        }
+        {
+          # Logitech Unifying receiver support on the HOST. Without hid-logitech-dj
+          # the receiver (e.g. 046d:c52b) binds to hid-generic, which cannot speak
+          # the Unifying protocol, so paired devices (K400 keyboard/touchpad) are
+          # never enumerated and deliver zero events. The gui-vm input path is
+          # evdev-forwarding (vhotplug reads the HOST evdev and forwards it via
+          # virtio-input), so the host must enumerate the K400 to have anything to
+          # forward. hidpp is needed for the HID++ devices behind the receiver.
+          name = "hid-logitech-unifying";
+          patch = null;
+          structuredExtraConfig = with lib.kernel; {
+            HID_LOGITECH = yes;
+            HID_LOGITECH_DJ = yes;
+            HID_LOGITECH_HIDPP = yes;
           };
         }
       ]
