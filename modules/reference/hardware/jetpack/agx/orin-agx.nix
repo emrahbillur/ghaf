@@ -44,17 +44,10 @@
       # p3737 carrier); pass it through to net-vm. Orin NX has no MGBE0.
       nvidia.passthroughs.mgbe0_net_vm.enable = true;
 
-      # 32 GiB static APP partition (64 GB eMMC): the desktop-bundle rootfs
-      # outgrew the image-derived APP size baked into older flash scripts, and
-      # static sizing also lets the flash script build without the sdImage
-      # (flash always uses -s <signed-sd-image> here anyway).
+      # Reserve space for the desktop closure on 64 GiB eMMC.
       nvidia.orin.flashScriptOverrides.appPartitionSizeBytes = 34359738368;
-      # gpu_vm is the compute capability (keeps host1x/gpu/media, drops
-      # display, releases scanout for disp-vm); paired with disp_vm.enable
-      # below (two-VM build).
+      # Split topology: compute gpu-vm plus display-only disp-vm.
       nvidia.passthroughs.gpu_vm.enable = true;
-      # Display-only microvm for the two-VM build (branch-only). Owns only
-      # scanout_p/disp_caps_pt/disp_chan_pt, disjoint from gpu_vm above.
       nvidia.passthroughs.disp_vm.enable = true;
 
       # Net VM hardware-specific modules - use hardware.definition for composition model
@@ -98,14 +91,6 @@
         }
         ../../../personalize
         { ghaf.reference.personalize.keys.enable = true; }
-        # Dev-only: relax net-vm's ssh flood rate-limit so `nix copy` and
-        # repeated deploy loops from the container don't self-blacklist the dev
-        # host (the ban cost most of a bring-up session). See
-        # ../nvidia-jetson-orin/dev-fw-exempt.nix. Drop for production.
-        {
-          imports = [ ../nvidia-jetson-orin/dev-fw-exempt.nix ];
-          ghaf.dev.firewallExempt.relaxSshFlood = true;
-        }
       ];
     };
   };
