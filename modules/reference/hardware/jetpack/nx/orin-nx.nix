@@ -4,6 +4,8 @@
 # Reference hardware modules
 #
 {
+  lib,
+  config,
   pkgs,
   ...
 }:
@@ -113,5 +115,28 @@
         ];
       };
     };
+    deviceTree.overlays = [
+      {
+        name = "nvidia-imx219-overlay";
+        # Pulls directly from the compiled firmware tree provided by your jetpack-nixos kernel package
+        dtboFile = "${config.boot.kernelPackages.devicetree}/tegra234-p3767-camera-p3768-imx219-A.dtbo";
+      }
+     ];
   };
+      
+  boot.kernelModules = [ "imx219" "v4l2-fwnode" ];
+
+  boot.kernelPatches = [
+    {
+      name = "enable-camera-configs";
+      patch = null;
+      structuredExtraConfig = with lib.kernel; {
+        I2C = yes;
+        VIDEO_IMX219 = module;
+        VIDEO_V4L2  = yes;
+        VIDEO_V4L2_SUBDEV_API = yes;
+        MEDIA_CONTROLLER = yes;
+      };
+    }
+  ];
 }
