@@ -153,7 +153,8 @@ rec {
                 Compression algorithm used for the erofs boot disk file system.
 
                 zstd is recommended for kernels >= 6.15 (better compression & decompression speed).
-                Requires 'CONFIG_EROFS_FS_ZIP_ZSTD=y' to be set for the guest kernel config.
+                Requires 'CONFIG_EROFS_FS=y', 'CONFIG_EROFS_FS_ZIP=y' and for zstd also
+                'CONFIG_EROFS_FS_ZIP_ZSTD=y' to be set for the guest kernel config.
               '';
               default = "zstd";
             };

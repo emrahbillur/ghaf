@@ -6,7 +6,6 @@
   pkgs,
   ...
 }:
-
 let
   cfg = config.ghaf.partitioning.verity;
   debugEnable = config.ghaf.profiles.debug.enable;

@@ -12,6 +12,23 @@
 let
   cfg = config.ghaf.hardware.nvidia.orin;
 
+  # Provide a safe local `diskEncryption` object when the per-SoM module
+  # does not declare `ghaf.hardware.nvidia.orin.diskEncryption`. This lets
+  # the file evaluate in flake/target combinations that don't expose that
+  # option (e.g. minimal test flakes) without scattering `?` guards.
+  diskEncryption =
+    if (cfg ? diskEncryption) then
+      cfg.diskEncryption
+    else
+      {
+        enable = false;
+        mapperName = "cryptroot";
+        deviceUniqueKey = {
+          enable = false;
+          deviceManufacturerPassphrase = "";
+        };
+      };
+
   # verity-volume.nix owns fileSystems."/" (tmpfs overlay) when enabled, so the
   # diskEncryption ext4 root override below must stand down to avoid a
   # conflicting mkForce. Defensive `options ?` check so this evaluates even in
@@ -20,7 +37,7 @@ let
   verityEnabled =
     (options ? ghaf.partitioning.verity.enable) && config.ghaf.partitioning.verity.enable;
   luksDiskKeyDescription = "luksDiskDeviceUniqueKey";
-  inherit (cfg.diskEncryption) luksUuid;
+  inherit (diskEncryption) luksUuid;
 
   # ESP is referenced by its FAT label, which both media share. Fall back to the
   # sd-image default when config.sdImage is absent (e.g. verity image builds),
@@ -263,13 +280,13 @@ let
         # Avoid interactive prompt in gen_ekb.py by providing UEFI auth key.
         printf '%s' "0x00000000000000000000000000000000" > auth.key
 
-        # Used for disk encryption.
-        printf '%s' "0x00000000000000000000000000000000" > sym2_t234.key
+          # Used for disk encryption.
+          printf '%s' "0x00000000000000000000000000000000" > sym2_t234.key
 
-                openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
-                  -keyout ek-rsa-key.pem -out ek-rsa.pem \
-                  -subj "/CN=Jetson Orin fTPM EK RSA/O=Ghaf" \
-                  -days 36500
+                  openssl req -x509 -newkey rsa:2048 -sha256 -nodes \
+                    -keyout ek-rsa-key.pem -out ek-rsa.pem \
+                    -subj "/CN=Jetson Orin fTPM EK RSA/O=Ghaf" \
+                    -days 36500
 
                 openssl ecparam -name prime256v1 -genkey -noout -out ek-ecc-key.pem
                 openssl req -x509 -new -sha256 \
@@ -280,14 +297,14 @@ let
                 openssl x509 -in ek-rsa.pem -outform DER -out ek-rsa.der
                 openssl x509 -in ek-ecc.pem -outform DER -out ek-ecc.der
 
-        ${pkgs.buildPackages.nvidia-jetpack.genEkb}/bin/gen_ekb.py \
-          -chip t234 \
-          -oem_k1_key oem_k1.key \
-          -in_auth_key auth.key \
-          -in_sym_key2 sym2_t234.key \
-          -in_ftpm_rsa_ek_cert ek-rsa.der \
-          -in_ftpm_ec_ek_cert ek-ecc.der \
-          -out "$out/eks_t234.img"
+          ${pkgs.buildPackages.nvidia-jetpack.genEkb}/bin/gen_ekb.py \
+            -chip t234 \
+            -oem_k1_key oem_k1.key \
+            -in_auth_key auth.key \
+            -in_sym_key2 sym2_t234.key \
+            -in_ftpm_rsa_ek_cert ek-rsa.der \
+            -in_ftpm_ec_ek_cert ek-ecc.der \
+            -out "$out/eks_t234.img"
       '';
 
   inherit (lib)
@@ -344,7 +361,7 @@ let
       set_part_dev() {
         PART_DEV=""
         ${
-          if cfg.diskEncryption.enable then
+          if diskEncryption.enable then
             ''
               # Resolve the root partition by the pinned LUKS header UUID rather than a
               # hardcoded device name or a partition-table PARTUUID (which differs between
@@ -388,8 +405,8 @@ let
       DISK="/dev/$(basename "$(readlink -f "/sys/class/block/$base_dev/..")")"
 
       RESIZE_TARGET="$PART_DEV"
-      ${lib.optionalString cfg.diskEncryption.enable ''
-        MAPPER_NAME="${cfg.diskEncryption.mapperName}"
+      ${lib.optionalString diskEncryption.enable ''
+        MAPPER_NAME="${diskEncryption.mapperName}"
         RESIZE_TARGET="/dev/mapper/$MAPPER_NAME"
       ''}
 
@@ -410,12 +427,12 @@ let
       partprobe "$DISK" || true
       udevadm settle || true
 
-      ${lib.optionalString cfg.diskEncryption.enable ''
+      ${lib.optionalString diskEncryption.enable ''
         echo "Resizing LUKS container $MAPPER_NAME..."
         ${
           # deviceUniqueKey and userPassphrase are mutually exclusive and exactly
           # one is set (assertion below), so this if/else always resizes.
-          if cfg.diskEncryption.deviceUniqueKey.enable then
+          if diskEncryption.deviceUniqueKey.enable then
             ''
               cryptsetup resize --key-description ${luksDiskKeyDescription} "$MAPPER_NAME"
             ''
@@ -553,7 +570,7 @@ let
         printf "error: LUKS root partition (UUID=%s) not found\n" "${luksUuid}"
         handle_error
       fi
-      defaultManufactureKey=${cfg.diskEncryption.deviceUniqueKey.deviceManufacturerPassphrase}
+      defaultManufactureKey=${diskEncryption.deviceUniqueKey.deviceManufacturerPassphrase}
       luksDiskKeyKeyringDescription=${luksDiskKeyDescription}
 
       wait_for_luks_device "$luksDev"
@@ -714,81 +731,6 @@ in
       default = true;
     };
 
-    diskEncryption = {
-      enable = mkEnableOption "generic LUKS root filesystem encryption for eMMC APP partition";
-
-      deviceUniqueKey = {
-        enable = mkEnableOption ''
-          disk decryption using a unique hardware key fetched from the OP-TEE.
-
-          On the first boot, the key (initially encrypted with a manufacturer key)
-          is rotated and re-encrypted with a device-unique key. Note that this
-          initial setup makes the first boot significantly slower.
-
-          This method provides an unattended boot process and does not require
-          user input to unlock the drive'';
-
-        deviceManufacturerPassphrase = mkOption {
-          description = ''
-            The temporary passphrase used to decrypt the device disk at the first
-            boot. Once the key is rotated to a device-unique key, this passphrase
-            is no longer needed for subsequent unlocks.
-          '';
-          type = types.str;
-          default = "ghaf";
-        };
-      };
-
-      userPassphrase = {
-        enable = mkEnableOption ''
-          a semi-manual passphrase for disk encryption. During device boot, the
-          device will prompt the console for the user to input the password.
-
-          Note: This option is primarily intended for testing purposes'';
-
-        passphrase = mkOption {
-          description = "The manual passphrase used to encrypt the disk.";
-          type = types.str;
-          default = "ghaf";
-        };
-      };
-
-      mode = mkOption {
-        description = "Disk encryption mode for Jetson root filesystem";
-        type = types.enum [ "generic-luks-passphrase" ];
-        default = "generic-luks-passphrase";
-      };
-
-      mapperName = mkOption {
-        description = "Mapped device name used by initrd after LUKS unlock";
-        type = types.str;
-        default = "cryptroot";
-      };
-
-      luksUuid = mkOption {
-        description = ''
-          Pinned LUKS2 header UUID of the encrypted root. Set on the container at
-          image build time (`sdimage.nix`, `cryptsetup reencrypt --uuid`) and
-          referenced at runtime as `/dev/disk/by-uuid/<uuid>` by the crypttab
-          device, the `pre-disk-unique-key` udev rule and the resize scan.
-
-          The header UUID rather than a partition PARTUUID, because the same
-          container ships on two partition tables — the raw sd-image on USB
-          (MBR) and the NVIDIA flash on eMMC/NVMe (GPT) — which necessarily carry
-          different PARTUUIDs. The header lives inside the container, so it is
-          identical on both media and independent of the kernel device name
-          (mmcblk/nvme/sda). It also survives the first-boot device-unique-key
-          rekey, which is a keyslot operation, not a header rewrite.
-
-          Read-only: two drives holding a verbatim ghaf flash carry the same UUID,
-          so a runtime scan cannot tell them apart and picks the first match.
-          Disambiguating needs a per-install-unique UUID, left as follow-up.
-        '';
-        type = types.str;
-        readOnly = true;
-        default = "0ada0e5b-0e5b-4e5b-8e5b-0000000000a9";
-      };
-    };
   };
 
   config = mkIf cfg.enable {
@@ -816,8 +758,8 @@ in
       }
       {
         assertion =
-          if cfg.diskEncryption.enable then
-            (cfg.diskEncryption.deviceUniqueKey.enable != cfg.diskEncryption.userPassphrase.enable)
+          if diskEncryption.enable then
+            (diskEncryption.deviceUniqueKey.enable != diskEncryption.userPassphrase.enable)
           else
             true;
         message = ''
@@ -830,12 +772,12 @@ in
         '';
       }
       {
-        assertion = !(cfg.diskEncryption.enable && verityEnabled);
+        assertion = !(diskEncryption.enable && verityEnabled);
         message = ''
           ghaf.hardware.nvidia.orin.diskEncryption.enable and
           ghaf.partitioning.verity.enable are mutually exclusive root strategies:
           verity owns fileSystems."/" as a tmpfs overlay, LUKS as an ext4 root on
-          /dev/mapper/${cfg.diskEncryption.mapperName}. Enable at most one.
+          /dev/mapper/${diskEncryption.mapperName}. Enable at most one.
         '';
       }
     ];
@@ -884,6 +826,8 @@ in
         efi.canTouchEfiVariables = true;
         systemd-boot.enable = true;
       };
+
+      # (moved to boot.initrd.kernelModules lower in this file)
 
       modprobeConfig.enable = true;
 
@@ -935,7 +879,25 @@ in
           };
         }
       ]
-      ++ lib.optionals (cfg.diskEncryption.enable && cfg.kernelVersion == "upstream-6-6") [
+      ++ lib.optionals (cfg.kernelVersion == "upstream-6-12") [
+        {
+          name = "erofs-zip-decompress";
+          patch = null;
+          structuredExtraConfig = with lib.kernel; {
+            EROFS_FS = module;
+            EROFS_FS_ZIP = yes;
+            EROFS_FS_ZIP_LZ4HC = yes;
+            EROFS_FS_ZIP_ZSTD = yes;
+            # Force these options to avoid them being overridden elsewhere.
+            # Ensure kernel has decompression support for compressed erofs images
+            ZSTD = lib.mkForce yes;
+            ZSTD_DECOMPRESS = lib.mkForce yes;
+            LZ4 = lib.mkForce yes;
+            LZ4_DECOMPRESS = lib.mkForce yes;
+          };
+        }
+      ]
+      ++ lib.optionals (diskEncryption.enable && cfg.kernelVersion == "upstream-6-6") [
         {
           name = "dm-crypt-config";
           patch = null;
@@ -976,14 +938,21 @@ in
         "nvpps"
         "nvethernet"
       ]
-      ++ lib.optionals cfg.diskEncryption.enable [
+      ++ lib.optionals diskEncryption.enable [
         "dm-crypt"
         "dm-mod"
       ];
-      kernelModules = [ ];
+      kernelModules = lib.mkDefault [
+        "erofs"
+        "zstd"
+        "zstd_decompress"
+        "lz4"
+        "lz4_compress"
+        "lz4_decompress"
+      ];
       # algif_skcipher is not available with the upstream-6-6 kernel variant
       # used by current Orin reference targets.
-      luks.cryptoModules = lib.mkIf cfg.diskEncryption.enable (
+      luks.cryptoModules = lib.mkIf diskEncryption.enable (
         lib.mkForce [
           "aes"
           "aes_generic"
@@ -995,11 +964,11 @@ in
           "af_alg"
         ]
       );
-      luks.devices = lib.mkIf cfg.diskEncryption.enable {
-        ${cfg.diskEncryption.mapperName} = {
+      luks.devices = lib.mkIf diskEncryption.enable {
+        ${diskEncryption.mapperName} = {
           device = "/dev/disk/by-uuid/${luksUuid}";
           allowDiscards = true;
-          keyFile = if cfg.diskEncryption.deviceUniqueKey.enable then "none" else null;
+          keyFile = if diskEncryption.deviceUniqueKey.enable then "none" else null;
         };
       };
 
@@ -1022,12 +991,12 @@ in
           systemd
           resizepartitionsScript
         ]
-        ++ lib.optionals cfg.diskEncryption.deviceUniqueKey.enable [
+        ++ lib.optionals diskEncryption.deviceUniqueKey.enable [
           preDiskUniqueKeyScript
           postDiskUniqueKeyScript
         ];
 
-      services.udev.rules = lib.optionalString cfg.diskEncryption.deviceUniqueKey.enable ''
+      services.udev.rules = lib.optionalString diskEncryption.deviceUniqueKey.enable ''
         ACTION=="add", SUBSYSTEM=="block", ENV{ID_FS_UUID}=="${luksUuid}", TAG+="systemd", ENV{SYSTEMD_WANTS}+="pre-disk-unique-key.service"
       '';
 
@@ -1062,7 +1031,7 @@ in
           };
         };
       }
-      // lib.optionalAttrs cfg.diskEncryption.deviceUniqueKey.enable {
+      // lib.optionalAttrs diskEncryption.deviceUniqueKey.enable {
         load-diskkey-to-keyring = {
           description = "Service for loading unique device key to kernel keyring";
           before = [
@@ -1084,7 +1053,7 @@ in
         pre-disk-unique-key = {
           description = "Service for device unique key disk encryption";
           before = [
-            "systemd-cryptsetup@${cfg.diskEncryption.mapperName}.service"
+            "systemd-cryptsetup@${diskEncryption.mapperName}.service"
           ];
           unitConfig = {
             DefaultDependencies = false;
@@ -1126,9 +1095,9 @@ in
       ];
     };
 
-    fileSystems = mkIf (cfg.diskEncryption.enable && !verityEnabled) {
+    fileSystems = mkIf (diskEncryption.enable && !verityEnabled) {
       "/" = lib.mkForce {
-        device = "/dev/mapper/${cfg.diskEncryption.mapperName}";
+        device = "/dev/mapper/${diskEncryption.mapperName}";
         fsType = "ext4";
       };
     };

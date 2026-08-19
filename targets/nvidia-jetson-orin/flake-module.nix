@@ -116,8 +116,12 @@ let
             DM_VERITY = module;
             DM_CRYPT = module; # encrypted swap (randomEncryption)
             EROFS_FS = module;
-            EROFS_FS_ZIP = yes; # lz4 compression support (lz4 is default, auto-selects LZ4_DECOMPRESS)
-            # TODO: switch to zstd when kernel >= 6.10 (EROFS_FS_ZIP_ZSTD, commit 7c35de4df105)
+            EROFS_FS_ZIP = yes;
+            EROFS_FS_ZIP_LZ4HC = yes;
+            EROFS_FS_ZIP_ZSTD = yes;
+            # Ensure kernel decompression support for erofs compressed images
+            ZSTD_DECOMPRESS = yes; # for zstd-compressed erofs images
+            LZ4_DECOMPRESS = yes; # for lz4-compressed erofs images
           };
         }
       ];
@@ -126,7 +130,6 @@ let
 
   # Shared by the AGX and NX accelerated-guivm variants.
   acceleratedGuivmUsbRules = [
-
     {
       description = "USB Devices for GUIVM";
       targetVm = "gui-vm";
@@ -359,7 +362,6 @@ let
         graphics.cosmic.renderDevice = "/dev/dri/renderD128";
       };
     })
-
   ];
 
   # A/B Verity Boot Configurations (AGX only)
@@ -395,7 +397,40 @@ let
       [
         "debug"
         "release"
-      ];
+      ]
+    ++
+      map
+        (
+          variant:
+          (ghaf-configuration {
+            name = "nvidia-jetson-orin-agx64-verity";
+            inherit system;
+            profile = "orin";
+            hardwareModule = self.nixosModules.hardware-nvidia-jetson-orin-agx64;
+            inherit variant;
+            extraModules = orinVerityModules;
+            extraConfig = {
+              reference.profiles.mvp-orinuser-trial.enable = true;
+              partitioning.verity.enable = true;
+              partitioning.verity.uki-signing-key-dir = lib.mkIf (
+                variant == "debug"
+              ) ../../modules/secureboot/dev-keys;
+              hardware.nvidia.orin.secureboot.enable = true;
+              # Debug builds enroll the dev certs so they match the dev signing
+              # keys; release builds keep the production certs from keysSource.
+              hardware.nvidia.orin.secureboot.keysSource = lib.mkIf (
+                variant == "debug"
+              ) ../../modules/secureboot/dev-keys;
+            };
+          })
+          // {
+            isVerity = true;
+          }
+        )
+        [
+          "debug"
+          "release"
+        ];
   all-target-configs = target-configs ++ verity-target-configs;
 
   generate-nodemoapps =
