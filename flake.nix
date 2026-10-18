@@ -166,7 +166,7 @@
     # Nvidia Orin support for NixOS
     jetpack-nixos = {
       #url = "github:anduril/jetpack-nixos";
-      url = "github:tiiuae/jetpack-nixos/october-rebase";
+      url = "github:emrahbillur/jetpack-nixos/fix-orin-disp-vm";
       inputs.nixpkgs.follows = "nixpkgs";
     };
 
